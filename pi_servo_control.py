@@ -1,4 +1,5 @@
 import gpiozero as gpz
+from adafruit_servokit import ServoKit		# works with PCA9685 servo controller
 from inputs import get_gamepad
 import math
 import time
@@ -7,7 +8,7 @@ import threading
 print("starting")
 
 class Controller():
-	# handles everything itself for now. just make an instance
+	# handles everything itself for now. just make an instance and reference variables where needed
 
 	def __init__(self):
 		# input values. reference these for now for controller input
@@ -111,15 +112,18 @@ class Controller():
 						print("unknown controller input")
 
 
-class Joint():
-	def __init__(self, pin):
-		self.target = -1
+class Joints():
+	def __init__(self, pin1, pin2, pin3, pin4, pin5, pin6):
+		self.target = [0, 0, 0, 0, 0, 0]		# target angles of all joints
 
-		self.servo = gpz.Servo(pin)
+		#self.servo = gpz.Servo(pin)
+		self.servos = ServoKit(channels=16)		# for joints 4, 5, and 6
 
 	def update(self):
-		# set new servo position
-		self.servo.value = target
+		# set new servo positions
+		self.servos.servo[0] = self.target[3];		# joint 4
+		self.servos.servo[1] = self.target[4];		# joint 5
+		self.servos.servo[2] = self.target[5];		# joint 6
 
 
 #servo = gpz.Servo(25)			# servo wired to pin 25
@@ -128,20 +132,20 @@ class Joint():
 
 joy = Controller()
 
-servo1 = Joint(25)
+joints = Joints(0, 0, 0, 0, 0, 0)
 
 try:
 	while True:
 		time.sleep(0.1)
 
-		servo1.target += 0.1
+		joints.target[3] += 1
 
-		if servo1.target > 1:
-			servo1.target = -1
+		if joints.target[3] > 180
+			joints.target[3] = -180
 
-		servo1.update()
+		joints.update()
 
-		print("val: %3.1f", servo1.target)
+		print("vals: ", + joints.target)
 
 except KeyboardInterrupt:
 	print("stopping")
