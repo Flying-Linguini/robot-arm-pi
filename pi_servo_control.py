@@ -140,7 +140,7 @@ try:
 
 		joints.target[3] += 1
 
-		if joints.target[3] > 180
+		if joints.target[3] > 180:
 			joints.target[3] = -180
 
 		joints.update()
