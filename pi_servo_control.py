@@ -1,4 +1,3 @@
-import gpiozero as gpz
 from adafruit_servokit import ServoKit		# works with PCA9685 servo controller
 from inputs import get_gamepad
 import math
