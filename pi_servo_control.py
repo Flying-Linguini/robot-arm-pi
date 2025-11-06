@@ -50,7 +50,14 @@ class Controller():
 		MAX_JOY_VAL = math.pow(2,15)
 
 		while True:
-			events = get_gamepad()
+			try:
+				events = get_gamepad()
+			except:
+				# probably no controller connected
+				print("no controller connected...")
+
+				time.sleep(1)
+				continue
 
 			for event in events:
 				# match might not work
@@ -118,11 +125,24 @@ class Joints():
 		#self.servo = gpz.Servo(pin)
 		self.servos = ServoKit(channels=16)		# for joints 4, 5, and 6
 
+		self.servos.frequency = 60
+
+		self.servos.servo[0].set_pulse_width_range(1000, 2000)
+		self.servos.servo[1].set_pulse_width_range(1000, 2000)
+		self.servos.servo[2].set_pulse_width_range(1000, 2000)
+
 	def update(self):
 		# set new servo positions
-		self.servos.servo[0] = self.target[3];		# joint 4
-		self.servos.servo[1] = self.target[4];		# joint 5
-		self.servos.servo[2] = self.target[5];		# joint 6
+		try:
+			self.servos.servo[0].angle = self.target[3];		# joint 4
+			self.servos.servo[1].angle = self.target[4];		# joint 5
+			self.servos.servo[2].angle = self.target[5];		# joint 6
+		except:
+			pass				# angle probably out of range
+
+	def print_state(self):
+		# print stepper and servo angles
+		print(self.servos.servo[0].angle, self.servos.servo[1].angle, self.servos.servo[2].angle, sep=', ')
 
 
 #servo = gpz.Servo(25)			# servo wired to pin 25
@@ -135,16 +155,27 @@ joints = Joints(0, 0, 0, 0, 0, 0)
 
 try:
 	while True:
-		time.sleep(0.1)
+		time.sleep(1)
 
-		joints.target[3] += 1
-
-		if joints.target[3] > 180:
-			joints.target[3] = -180
+		joints.target[3] = 0
+		joints.target[4] = 0
+		joints.target[5] = 0
 
 		joints.update()
 
-		print("vals: ", + joints.target)
+		print(joints.target, end=' | ')
+		joints.print_state()
+
+		time.sleep(1)
+
+		joints.target[3] = 179
+		joints.target[4] = 179
+		joints.target[5] = 179
+
+		joints.update()
+
+		print(joints.target, end=' | ')
+		joints.print_state()
 
 except KeyboardInterrupt:
 	print("stopping")
