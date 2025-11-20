@@ -4,30 +4,35 @@ import math
 import time
 import threading
 from RPi import GPIO
+from subprocess import call
 
 print("starting")
 
-ENC1_PIN = 15				# encoder pin for joint 1
+# io layout of raspberry pi's is dumb. the stepper pins take up the end of the headers opposite the power pins
+
+SHTDWN_PIN = 27 			# signal from arduino (0 for shutdown command, 1 otherwise)
+
+ENC1_PIN = 12				# encoder pin for joint 1
 ENC2_PIN = 16
-ENC3_PIN = 17
-ENC5_PIN = 18				# skips joint 4 (just for steppers)
+ENC3_PIN = 20
+ENC5_PIN = 21				# skips joint 4 (just for steppers)
 
-DIR1_PIN = 20
-DIR2_PIN = 21
-DIR3_PIN = 22
-DIR5_PIN = 23
+DIR1_PIN = 6
+DIR2_PIN = 13
+DIR3_PIN = 19
+DIR5_PIN = 26
 
-STEP1_PIN = 24
-STEP2_PIN = 25
-STEP3_PIN = 26
-STEP5_PIN = 27
+STEP1_PIN = 25
+STEP2_PIN = 8
+STEP3_PIN = 7
+STEP5_PIN = 1
 
 CW = 1
 CCW = 0
 STEPS_PER_REV = 200			# for steppers
 STEP_DELAY = 0.0005 / 1		# found experimentally. seems to sork pretty well (divided by resolution)
 
-STEP_MODE = (14, 15, 16)	# same for all steppers for now
+STEP_MODE = (10, 9, 11)		# same for all steppers for now
 RESOLUTION = {'full': (0, 0, 0),
 			'half': (1, 0, 0),
 			'1/4': (0, 1, 0),
@@ -36,6 +41,9 @@ RESOLUTION = {'full': (0, 0, 0),
 			'1/32': (1, 0, 1)}
 
 GPIO.setmode(GPIO.BCM)
+
+GPIO.setup(SHTDWN_PIN, GPIO.IN)
+
 GPIO.setup(STEP_MODE, GPIO.OUT)
 GPIO.output(STEP_MODE, RESOLUTION['full'])
 
@@ -214,7 +222,11 @@ class StepperDriver():
 
 
 class Joints():
-	def __init__(self, pin1, pin2, pin3, pin4, pin5, pin6):
+	def __init__(self):
+		global DIR1_PIN, DIR2_PIN, DIR3_PIN, DIR5_PIN
+		global STEP1_PIN, STEP2_PIN, STEP3_PIN, STEP5_PIN
+		global ENC1_PIN, ENC2_PIN, ENC3_PIN, ENC5_PIN
+
 		self.state = [0, 0, 0, 0, 0, 0, 0]			# current state of all joints
 		self.cont_state = [0, 0, 0, 0, 0, 0, 0]		# state controller for each joint
 		self.target = [0, 0, 0, 0, 0, 0, 0]			# target angles of all joints
@@ -309,8 +321,10 @@ class Joints():
 
 joy = Controller()
 
-joints = Joints(0, 0, 0, 0, 0, 0)
+joints = Joints()
 
+
+time.sleep(1)				# give arduino time to start up
 
 try:
 	while True:
@@ -323,6 +337,10 @@ try:
 		print(joints.target, end=' | ')
 		joints.print_state()
 
+		# check for shutdown
+		if GPIO.input(SHTDWN_PIN) == GPIO.low:
+			GPIO.cleanup()
+			call("shutdown now", shell=True)
 
 except KeyboardInterrupt:
 	print("stopping")
