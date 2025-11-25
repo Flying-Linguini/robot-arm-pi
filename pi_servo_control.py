@@ -5,17 +5,25 @@ import time
 import threading
 from RPi import GPIO
 from subprocess import call
+import serial
 
 print("starting")
 
+working = True				# false when program stops
+
+CTR_BASE_ANGLE = 135		# encoder reading when arm base faces straight forward
+
 # io layout of raspberry pi's is dumb. the stepper pins take up the end of the headers opposite the power pins
 
-SHTDWN_PIN = 27 			# signal from arduino (0 for shutdown command, 1 otherwise)
+SHTDWN_PIN = 22 			# signal from arduino (0 for shutdown command, 1 otherwise)
 
-ENC1_PIN = 12				# encoder pin for joint 1
-ENC2_PIN = 16
-ENC3_PIN = 20
-ENC5_PIN = 21				# skips joint 4 (just for steppers)
+LEFT_QR_PIN = 23			# pins for restricting movement different sides
+RIGHT_QR_PIN = 24
+
+#ENC1_PIN = 12				# encoder pin for joint 1
+#ENC2_PIN = 16
+#ENC3_PIN = 20
+#ENC5_PIN = 21				# skips joint 4 (just for steppers)
 
 DIR1_PIN = 6
 DIR2_PIN = 13
@@ -43,9 +51,56 @@ RESOLUTION = {'full': (0, 0, 0),
 GPIO.setmode(GPIO.BCM)
 
 GPIO.setup(SHTDWN_PIN, GPIO.IN)
+GPIO.setup(LEFT_QR_PIN, GPIO.IN)
+GPIO.setup(RIGHT_QR_PIN, GPIO.IN)
+
+GPIO.setup(DIR1_PIN, GPIO.OUT)
+GPIO.setup(DIR2_PIN, GPIO.OUT)
+GPIO.setup(DIR3_PIN, GPIO.OUT)
+GPIO.setup(DIR5_PIN, GPIO.OUT)
+GPIO.setup(STEP1_PIN, GPIO.OUT)
+GPIO.setup(STEP2_PIN, GPIO.OUT)
+GPIO.setup(STEP3_PIN, GPIO.OUT)
+GPIO.setup(STEP5_PIN, GPIO.OUT)
+#GPIO.setup(ENC1_PIN, GPIO.IN)
+#GPIO.setup(ENC2_PIN, GPIO.IN)
+#GPIO.setup(ENC3_PIN, GPIO.IN)
+#GPIO.setup(ENC5_PIN, GPIO.IN)
 
 GPIO.setup(STEP_MODE, GPIO.OUT)
 GPIO.output(STEP_MODE, RESOLUTION['full'])
+
+encs = [0, 0, 0, 0]				# encoder values from serial
+
+
+def _read_encoders():
+	global working, encs
+
+	raw = [0, 0, 0, 0]
+
+	ser = serial.Serial("/dev/ttyACM0", 115200, timeout=1)		# check usb device name
+
+	while working:
+		line = ser.readline().decode("utf-8", errors="ignore").strip()
+		if not line:
+			continue
+
+		try:
+			raw[0], raw[1], raw[2], raw[3] = line.split(',')
+
+			encs = [int(raw[0]), int(raw[1]), int(raw[2]), int(raw[3])]
+
+		except ValueError:
+			# line probably malformed
+			continue
+
+		time.sleep(0.001)
+
+# serial monitoring has its own thread
+_enc_monitoring = threading.Thread(target = _read_encoders, args = ())
+_enc_monitoring.daemon = True
+_enc_monitoring.start()
+
 
 
 class Controller():
@@ -90,12 +145,12 @@ class Controller():
 
 	def _monitor_controller(self):
 		# thread for monitoring inputs
+		global working
 
-		# max trigger and joystick values
-		MAX_TRIG_VAL = math.pow(2, 8)
-		MAX_JOY_VAL = math.pow(2,15)
+		# joystick deadzone from center
+		JOY_DZ = 1000
 
-		while True:
+		while working:
 			try:
 				events = get_gamepad()
 			except:
@@ -106,20 +161,37 @@ class Controller():
 				continue
 
 			for event in events:
-				# match might not work
+				#print(f"Event type: {event.ev_type}, Code: {event.code}, State: {event.state}")
+
 				match event.code:
 					# joysticks
 					case "ABS_X":
-						self.left_joy_x = event.state / MAX_JOY_VAL
+						if abs(event.state) > JOY_DZ:
+							self.left_joy_x = event.state
+						else:
+							self.left_joy_x = 0
+
 					case "ABS_Y":
-						self.left_joy_y = event.state / MAX_JOY_VAL
+						if abs(event.state) > JOY_DZ:
+							self.left_joy_y = event.state
+						else:
+							self.left_joy_y = 0
+
 					case "BTN_THUMBL":
 						self.left_thumb = event.state
 
 					case "ABS_RX":
-						self.right_joy_x = event.state / MAX_JOY_VAL
+						if abs(event.state) > JOY_DZ:
+							self.right_joy_x = event.state
+						else:
+							self.right_joy_x = 0
+
 					case "ABS_RY":
-						self.right_joy_y = event.state / MAX_JOY_VAL
+						if abs(event.state) > JOY_DZ:
+							self.right_joy_y = event.state
+						else:
+							self.right_joy_y = 0
+
 					case "BTN_THUMBR":
 						self.right_thumb = event.state
 
@@ -134,10 +206,10 @@ class Controller():
 						self.down_dpad = event.state
 
 					# triggers
-					case "ABS_Z":
-						self.left_trig = event.state / MAX_TRIG_VAL
+					case "ABS_LZ":
+						self.left_trig = event.state
 					case "ABS_RZ":
-						self.right_trig = event.state / MAX_TRIG_VAL
+						self.right_trig = event.state
 
 					# bumpers
 					case "BTN_TL":
@@ -164,60 +236,66 @@ class Controller():
 						print("unknown controller input")
 
 
+
+joy = Controller()
+
+
+
 class StepperDriver():
-	# handles one stepper motor each instance
-	def __init__(self, dir_pin, step_pin, enc_pin, precision):
+	# handles one stepper motor each instance. this must be handled on main thread for GPIO allocation reasons
+	def __init__(self, dir_pin, step_pin, enc_idx, precision):
 		global CW
 
 		self.dir_pin = dir_pin
 		self.step_pin = step_pin
-		self.enc_pin = enc_pin
+		self.enc_idx = enc_idx
 		self.precision = precision 			# motor stops moving when within precision of target
 
 		self.state = 0						# initial state
 		self.target = 0
 
-		GPIO.setup(self.dir_pin, GPIO.OUT)
-		GPIO.setup(self.step_pin, GPIO.OUT)
-		GPIO.setup(self.enc_pin, GPIO.IN)
+		self.step_state = 0					# 1 or 0 for stepping high or low (> 0 for waiting)
 
 		GPIO.output(self.dir_pin, CW)		# initial direction
 
-		# start motor running thread
-		self._monitor_thread = threading.Thread(target = self._run_steppers, args = ())
-		self._monitor_thread.daemon = True
-		self._monitor_thread.start()
-
 	def get_state(self):
-		self.state = GPIO.input(self.enc_pin)			# !! might have to do more to get encoder state !!
+		# get encoder state from serial
+		global encs
+		# readings go from ~-300 to ~300
+		self.state = (encs[self.enc_idx] + 300) * 0.45		# translate readings to degrees
 
 	def update(self, target):
 		# give motor new target
 		self.target = target
 
-	def _run_steppers(self):
+	def check_step(self):
 		# thread running stepper motors
-		global CW, CCW, STEP_DELAY
+		global CW, CCW
 
-		while True:
-			self.get_state()
+		self.get_state()
 
-			# direction
-			if self.target > self.state:
-				GPIO.output(self.dir_pin, CW)
+		# direction
+		if self.target > self.state:
+			GPIO.output(self.dir_pin, CW)
 
-			elif self.target < self.state:
-				GPIO.output(self.dir_pin, CCW)
+		elif self.target < self.state:
+			GPIO.output(self.dir_pin, CCW)
 
-			# move in direction
-			if math.abs(self.state - self.target) > self.precision:
+	def step(self):
+		if abs(self.state - self.target) > self.precision:
+			if self.step_state == 0:
+				# go high
 				GPIO.output(self.step_pin, GPIO.HIGH)
-				time.sleep(STEP_DELAY)
-				GPIO.output(self.step_pin, GPIO.LOW)
-				time.sleep(STEP_DELAY)
+				self.step_state = 1
 
-			else:
-				time.sleep(0.01)
+			elif self.step_state == 1:
+				# go low
+				GPIO.output(self.step_pin, GPIO.LOW)
+				self.step_state = -1
+
+			elif self.step_state == -1:
+				# wait to limit speed
+				self.state_state = 0
 
 
 
@@ -242,19 +320,28 @@ class Joints():
 
 		# stepper stuff
 		self.steppers = []
-		self.steppers.append(StepperDriver(DIR1_PIN, STEP1_PIN, ENC1_PIN, 5))
-		self.steppers.append(StepperDriver(DIR2_PIN, STEP2_PIN, ENC2_PIN, 5))
-		self.steppers.append(StepperDriver(DIR3_PIN, STEP3_PIN, ENC3_PIN, 5))
-		self.steppers.append(StepperDriver(DIR5_PIN, STEP5_PIN, ENC5_PIN, 5))
+		time.sleep(0.01)
+		self.steppers.append(StepperDriver(DIR1_PIN, STEP1_PIN, 0, 5))
+		time.sleep(0.01)
+		self.steppers.append(StepperDriver(DIR2_PIN, STEP2_PIN, 1, 5))
+		time.sleep(0.01)
+		self.steppers.append(StepperDriver(DIR3_PIN, STEP3_PIN, 2, 5))
+		time.sleep(0.01)
+		self.steppers.append(StepperDriver(DIR5_PIN, STEP5_PIN, 3, 5))
+
+		# thread stuff
+		self._handle_thread = threading.Thread(target = self._handle_joints, args = ())
+		self._handle_thread.daemon = True
+		self._handle_thread.start()
 
 	def get_controller_state(self, joy):
 		# base
-		self.cont_state[0] = joy.left_joy_x
-		self.cont_state[1] = joy.left_joy_y
+		self.cont_state[0] = joy.left_joy_x / 32767
+		self.cont_state[1] = joy.left_joy_y / 32767
 
 		# mid-arm
-		self.cont_state[2] = joy.right_joy_y
-		self.cont_state[3] = joy.right_joy_x
+		self.cont_state[2] = joy.right_joy_y / 32767
+		self.cont_state[3] = joy.right_joy_x / 32767
 
 		# wrist
 		if joy.right_trig > 0:
@@ -265,11 +352,11 @@ class Joints():
 		if joy.right_bump > 0:
 			self.cont_state[5] = joy.right_bump
 		else:
-			self.cont_state[5] = joy.left_bump
+			self.cont_state[5] = -joy.left_bump
 
 		# tooling
 		if joy.a > 0:
-			self.cont_state[6] = 90		# open
+			self.cont_state[6] = 170	# open
 		elif joy.b > 0:
 			self.cont_state[6] = 0		# closed
 
@@ -290,6 +377,8 @@ class Joints():
 		self.state[6] = self.servos.servo[2].angle
 
 	def update(self):
+		global LEFT_QR_PIN, RIGHT_QR_PIN, CTR_BASE_ANGLE
+
 		# update self.target
 		self.target[0] += self.cont_state[0]
 		self.target[1] += self.cont_state[1]
@@ -300,7 +389,17 @@ class Joints():
 		self.target[6] = self.cont_state[6]
 
 		# set new stepper positions
+		# base checks for restrictions
+		#if self.target[0] < CTR_BASE_ANGLE and GPIO.input(RIGHT_QR_PIN) == GPIO.LOW:
 		self.steppers[0].update(self.target[0])
+		#elif self.target[0] < CTR_BASE_ANGLE and GPIO.input(RIGHT_QR_PIN) == GPIO.HIGH:
+		#	self.steppers[0].update(CTR_BASE_ANGLE)
+
+		#if self.target[0] > CTR_BASE_ANGLE and GPIO.input(LEFT_QR_PIN) == GPIO.LOW:
+		self.steppers[0].update(self.target[0])
+		#elif self.target[0] > CTR_BASE_ANGLE and GPIO.input(LEFT_QR_PIN) == GPIO.HIGH:
+		#	self.steppers[0].update(CTR_BASE_ANGLE)
+
 		self.steppers[1].update(self.target[1])
 		self.steppers[2].update(self.target[2])
 		self.steppers[3].update(self.target[4])
@@ -313,35 +412,74 @@ class Joints():
 		except:
 			pass				# angle probably out of range
 
+	def _handle_joints(self):
+		global working, joy
+
+		# initialize
+		time.sleep(1)		# give encoders time to average out true
+		self.get_state()
+		self.target[0] = self.state[0]
+		self.target[1] = self.state[1]
+		self.target[2] = self.state[2]
+		self.target[3] = self.state[3]
+		self.target[4] = self.state[4]
+		self.target[5] = self.state[5]
+		self.target[6] = self.state[6]
+
+		while working:
+			self.get_state()
+			self.get_controller_state(joy)
+			self.update()
+
+			time.sleep(0.01)
+
 	def print_state(self):
 		# print stepper and servo angles
 		print(self.cont_state, self.target, self.state, sep=', ')
 
 
 
-joy = Controller()
-
 joints = Joints()
 
 
-time.sleep(1)				# give arduino time to start up
+"""while True:
+	for s in joints.steppers:
+		#s.check_step()
+		s.step()
+
+	time.sleep(STEP_DELAY)"""
+
+
+now = time.time()
 
 try:
-	while True:
-		time.sleep(0.1)
+	while working:
+		then = now
+		now = time.time()
 
-		joints.get_state()
-		joints.get_controller_state(joy)
-		joints.update()
+		# ensure proper timing for steppers
+		while now - then < STEP_DELAY:
+			time.sleep(0.00001)
+			now = time.time()
 
-		print(joints.target, end=' | ')
+		#print((now - then))
+
+		# step steppers
+		for s in joints.steppers:
+			s.check_step()
+			s.step()
+
+		# print stuff
+		#print(joints.target, end='\t|\t')
 		joints.print_state()
+		print(encs)
 
 		# check for shutdown
-		if GPIO.input(SHTDWN_PIN) == GPIO.low:
+		if GPIO.input(SHTDWN_PIN) == GPIO.LOW:
 			GPIO.cleanup()
 			call("shutdown now", shell=True)
 
 except KeyboardInterrupt:
 	print("stopping")
-	GPIO.cleanup()
+
+GPIO.cleanup()
