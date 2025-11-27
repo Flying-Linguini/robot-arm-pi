@@ -22,6 +22,9 @@ sends shutdown command when battery power is below a threshold
 
 int btn_released = 0;		/* start listening for turn-off signal when button is released from turn-on signal */
 
+int sense_count = 0;		/* counts up when arduino wants to turn off. turns off at threshold */
+int btn_count = 0;
+
 void shutdown() {
 	Serial.println("shutdown started");
 	digitalWrite(TOPI_PIN, LOW);		/* tell raspberry pi its over */
@@ -46,7 +49,7 @@ void setup() {
 }
 
 void loop() {
-	int btn = digitalRead(BTN_PIN);
+	int btn = analogRead(BTN_PIN);
 	int bat_volt = analogRead(BAT_VOLT_PIN);
 	int psu_volt = analogRead(SPLY_VOLT_PIN);
 
@@ -57,16 +60,28 @@ void loop() {
 	if (bat_volt < BAT_OFF_THRSH && psu_volt < 50 && millis() > GP_START) {
 
 		Serial.println("battery voltage too low");
-		shutdown();
+		sense_count++;
+
+	} else {
+		sense_count = 0;
 	}
 
 	/* check turn-off signal */
-	if (btn_released == 1 && btn == HIGH) shutdown();
+	if (btn_released == 1 && btn >= 500) btn_count++;
+	else btn_count = 0;
 
-	Serial.print("battery voltage: ");
+	if (sense_count >= 5 || btn_count >= 5) shutdown();
+
+	/*Serial.print("battery voltage: ");
 	Serial.print(bat_volt);
 	Serial.print("\tpsu voltage: ");
-	Serial.println(psu_volt);
+	Serial.println(psu_volt);*/
 
-	delay(100);
+	Serial.print(sense_count);
+	Serial.print(", ");
+	Serial.print(btn_count);
+	Serial.print(", ");
+	Serial.println(btn);
+
+	delay(50);
 }
