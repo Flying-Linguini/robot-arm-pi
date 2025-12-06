@@ -54,7 +54,7 @@ void loop() {
 	int psu_volt = analogRead(SPLY_VOLT_PIN);
 
 	/* check if button is released from turn-on signal */
-	if (btn_released == 0 && btn == LOW) btn_released = 1;
+	if (btn_released == 0 && btn <= 200) btn_released = 1;
 
 	/* check if battery voltage below threshold and power supply isnt running */
 	if (bat_volt < BAT_OFF_THRSH && psu_volt < 50 && millis() > GP_START) {
